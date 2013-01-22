@@ -1,6 +1,32 @@
 require 'helper'
 
 class TestSite < Test::Unit::TestCase
+  context "configuring sites" do
+    should "have an array for plugins by default" do
+      site = Site.new(Jekyll::DEFAULTS)
+      assert_equal [File.join(Dir.pwd, '_plugins')], site.plugins
+    end
+
+    should "have an array for plugins if passed as a string" do
+      site = Site.new(Jekyll::DEFAULTS.merge({'plugins' => '/tmp/plugins'}))
+      assert_equal ['/tmp/plugins'], site.plugins
+    end
+
+    should "have an array for plugins if passed as an array" do
+      site = Site.new(Jekyll::DEFAULTS.merge({'plugins' => ['/tmp/plugins', '/tmp/otherplugins']}))
+      assert_equal ['/tmp/plugins', '/tmp/otherplugins'], site.plugins
+    end
+
+    should "have an empty array for plugins if nothing is passed" do
+      site = Site.new(Jekyll::DEFAULTS.merge({'plugins' => []}))
+      assert_equal [], site.plugins
+    end
+
+    should "have an empty array for plugins if nil is passed" do
+      site = Site.new(Jekyll::DEFAULTS.merge({'plugins' => nil}))
+      assert_equal [], site.plugins
+    end
+  end
   context "creating sites" do
     setup do
       stub(Jekyll).configuration do
@@ -126,19 +152,47 @@ class TestSite < Test::Unit::TestCase
 
     should "filter entries with exclude" do
       excludes = %w[README TODO]
-      includes = %w[index.html site.css]
+      files = %w[index.html site.css .htaccess]
 
-      @site.exclude = excludes
-      assert_equal includes, @site.filter_entries(excludes + includes)
+      @site.exclude = excludes + ["exclude*"]
+      assert_equal files, @site.filter_entries(excludes + files + ["excludeA"])
     end
     
+    should "not filter entries within include" do
+      includes = %w[_index.html .htaccess include*]
+      files = %w[index.html _index.html .htaccess includeA]
+
+      @site.include = includes
+      assert_equal files, @site.filter_entries(files)
+    end
+
+    context 'error handling' do
+      should "raise if destination is included in source" do
+        stub(Jekyll).configuration do
+          Jekyll::DEFAULTS.merge({'source' => source_dir, 'destination' => source_dir})
+        end
+
+        assert_raise Jekyll::FatalException do
+          site = Site.new(Jekyll.configuration)
+        end
+      end
+
+      should "raise if destination is source" do
+        stub(Jekyll).configuration do
+          Jekyll::DEFAULTS.merge({'source' => source_dir, 'destination' => File.join(source_dir, "..")})
+        end
+
+        assert_raise Jekyll::FatalException do
+          site = Site.new(Jekyll.configuration)
+        end
+      end
+    end
+
     context 'with orphaned files in destination' do
       setup do
         clear_dest
         @site.process
         # generate some orphaned files:
-        # hidden file
-        File.open(dest_dir('.htpasswd'), 'w')
         # single file
         File.open(dest_dir('obsolete.html'), 'w')
         # single file in sub directory
@@ -146,23 +200,46 @@ class TestSite < Test::Unit::TestCase
         File.open(dest_dir('qux/obsolete.html'), 'w')
         # empty directory
         FileUtils.mkdir(dest_dir('quux'))
+        FileUtils.mkdir(dest_dir('.git'))
+        FileUtils.mkdir(dest_dir('.svn'))
+        FileUtils.mkdir(dest_dir('.hg'))
+        # single file in repository
+        File.open(dest_dir('.git/HEAD'), 'w')
+        File.open(dest_dir('.svn/HEAD'), 'w')
+        File.open(dest_dir('.hg/HEAD'), 'w')
       end
       
       teardown do
-        FileUtils.rm_f(dest_dir('.htpasswd'))
         FileUtils.rm_f(dest_dir('obsolete.html'))
         FileUtils.rm_rf(dest_dir('qux'))
         FileUtils.rm_f(dest_dir('quux'))
+        FileUtils.rm_rf(dest_dir('.git'))
+        FileUtils.rm_rf(dest_dir('.svn'))
+        FileUtils.rm_rf(dest_dir('.hg'))
       end
       
       should 'remove orphaned files in destination' do
+        @site.process
+        assert !File.exist?(dest_dir('obsolete.html'))
+        assert !File.exist?(dest_dir('qux'))
+        assert !File.exist?(dest_dir('quux'))
+        assert File.exist?(dest_dir('.git'))
+        assert File.exist?(dest_dir('.git/HEAD'))
+      end
+
+      should 'remove orphaned files in destination - keep_files .svn' do
+        config = Jekyll::DEFAULTS.merge({'source' => source_dir, 'destination' => dest_dir, 'keep_files' => ['.svn']})
+        @site = Site.new(config)
         @site.process
         assert !File.exist?(dest_dir('.htpasswd'))
         assert !File.exist?(dest_dir('obsolete.html'))
         assert !File.exist?(dest_dir('qux'))
         assert !File.exist?(dest_dir('quux'))
+        assert !File.exist?(dest_dir('.git'))
+        assert !File.exist?(dest_dir('.git/HEAD'))
+        assert File.exist?(dest_dir('.svn'))
+        assert File.exist?(dest_dir('.svn/HEAD'))
       end
-
     end
     
     context 'with an invalid markdown processor in the configuration' do

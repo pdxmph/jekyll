@@ -3,15 +3,20 @@ module Jekyll
   class HighlightBlock < Liquid::Block
     include Liquid::StandardFilters
 
-    # We need a language, but the linenos argument is optional.
-    SYNTAX = /(\w+)\s?([\w\s=]+)*/
+    # The regular expression syntax checker. Start with the language specifier.
+    # Follow that by zero or more space separated options that take one of two
+    # forms:
+    #
+    # 1. name
+    # 2. name=value
+    SYNTAX = /^([a-zA-Z0-9.+#-]+)((\s+\w+(=\w+)?)*)$/
 
     def initialize(tag_name, markup, tokens)
       super
-      if markup =~ SYNTAX
+      if markup.strip =~ SYNTAX
         @lang = $1
-        if defined? $2
-          tmp_options = {}
+        @options = {}
+        if defined?($2) && $2 != ''
           $2.split.each do |opt|
             key, value = opt.split('=')
             if value.nil?
@@ -21,13 +26,8 @@ module Jekyll
                 value = true
               end
             end
-            tmp_options[key] = value
+            @options[key] = value
           end
-          tmp_options = tmp_options.to_a.collect { |opt| opt.join('=') }
-          # additional options to pass to Albino
-          @options = { 'O' => tmp_options.join(',') }
-        else
-          @options = {}
         end
       else
         raise SyntaxError.new("Syntax Error in 'highlight' - Valid syntax: highlight <lang> [linenos]")
@@ -43,7 +43,13 @@ module Jekyll
     end
 
     def render_pygments(context, code)
-      output = add_code_tags(Albino.new(code, @lang).to_s(@options), @lang)
+      @options[:encoding] = 'utf-8'
+
+      output = add_code_tags(
+        Pygments.highlight(code, :lexer => @lang, :options => @options),
+        @lang
+      )
+
       output = context["pygments_prefix"] + output if context["pygments_prefix"]
       output = output + context["pygments_suffix"] if context["pygments_suffix"]
       output

@@ -4,8 +4,9 @@ module Jekyll
 
   class Site
     attr_accessor :config, :layouts, :posts, :pages, :static_files,
-                  :categories, :exclude, :source, :dest, :lsi, :pygments,
-                  :permalink_style, :tags, :time, :future, :safe, :plugins, :limit_posts
+                  :categories, :exclude, :include, :source, :dest, :lsi, :pygments,
+                  :permalink_style, :tags, :time, :future, :safe, :plugins, :limit_posts,
+                  :keep_files
 
     attr_accessor :converters, :generators
 
@@ -18,13 +19,15 @@ module Jekyll
       self.safe            = config['safe']
       self.source          = File.expand_path(config['source'])
       self.dest            = File.expand_path(config['destination'])
-      self.plugins         = File.expand_path(config['plugins'])
+      self.plugins         = Array(config['plugins']).map { |d| File.expand_path(d) }
       self.lsi             = config['lsi']
       self.pygments        = config['pygments']
       self.permalink_style = config['permalink'].to_sym
       self.exclude         = config['exclude'] || []
+      self.include         = config['include'] || []
       self.future          = config['future']
       self.limit_posts     = config['limit_posts'] || nil
+      self.keep_files      = config['keep_files'] || []
 
       self.reset
       self.setup
@@ -69,11 +72,19 @@ module Jekyll
     def setup
       require 'classifier' if self.lsi
 
+      # Check that the destination dir isn't the source dir or a directory
+      # parent to the source dir.
+      if self.source =~ /^#{self.dest}/
+        raise FatalException.new "Destination directory cannot be or contain the Source directory."
+      end
+
       # If safe mode is off, load in any Ruby files under the plugins
       # directory.
       unless self.safe
-        Dir[File.join(self.plugins, "**/*.rb")].each do |f|
-          require f
+        self.plugins.each do |plugins|
+            Dir[File.join(plugins, "**/*.rb")].each do |f|
+              require f
+            end
         end
       end
 
@@ -98,12 +109,12 @@ module Jekyll
       self.read_directories
     end
 
-    # Read all the files in <source>/<dir>/_layouts and create a new Layout
-    # object with each one.
+    # Read all the files in <source>/<layouts> and create a new Layout object
+    # with each one.
     #
     # Returns nothing.
-    def read_layouts(dir = '')
-      base = File.join(self.source, dir, "_layouts")
+    def read_layouts
+      base = File.join(self.source, self.config['layouts'])
       return unless File.exists?(base)
       entries = []
       Dir.chdir(base) { entries = filter_entries(Dir['*.*']) }
@@ -118,12 +129,12 @@ module Jekyll
     # that will become part of the site according to the rules in
     # filter_entries.
     #
-    # dir - The String relative path of the directory to read.
+    # dir - The String relative path of the directory to read. Default: ''.
     #
     # Returns nothing.
     def read_directories(dir = '')
       base = File.join(self.source, dir)
-      entries = Dir.chdir(base) { filter_entries(Dir['*']) }
+      entries = Dir.chdir(base) { filter_entries(Dir.entries('.')) }
 
       self.read_posts(dir)
 
@@ -173,7 +184,10 @@ module Jekyll
       self.posts.sort!
 
       # limit the posts if :limit_posts option is set
-      self.posts = self.posts[-limit_posts, limit_posts] if limit_posts
+      if limit_posts
+        limit = self.posts.length < limit_posts ? self.posts.length : limit_posts
+        self.posts = self.posts[-limit, limit]
+      end
     end
 
     # Run each of the Generators.
@@ -189,12 +203,13 @@ module Jekyll
     #
     # Returns nothing.
     def render
+      payload = site_payload
       self.posts.each do |post|
-        post.render(self.layouts, site_payload)
+        post.render(self.layouts, payload)
       end
 
       self.pages.each do |page|
-        page.render(self.layouts, site_payload)
+        page.render(self.layouts, payload)
       end
 
       self.categories.values.map { |ps| ps.sort! { |a, b| b <=> a } }
@@ -210,7 +225,11 @@ module Jekyll
       # all files and directories in destination, including hidden ones
       dest_files = Set.new
       Dir.glob(File.join(self.dest, "**", "*"), File::FNM_DOTMATCH) do |file|
-        dest_files << file unless file =~ /\/\.{1,2}$/
+        if self.keep_files.length > 0
+          dest_files << file unless file =~ /\/\.{1,2}$/ || file =~ keep_file_regex
+        else
+          dest_files << file unless file =~ /\/\.{1,2}$/
+        end
       end
 
       # files to be written
@@ -231,8 +250,19 @@ module Jekyll
       files.merge(dirs)
 
       obsolete_files = dest_files - files
-
       FileUtils.rm_rf(obsolete_files.to_a)
+    end
+
+    # Private: creates a regular expression from the keep_files array
+    # 
+    # Examples
+    #   ['.git','.svn'] creates the following regex: /\/(\.git|\/.svn)/
+    #
+    # Returns the regular expression
+    def keep_file_regex
+      or_list = self.keep_files.join("|")
+      pattern = "\/(#{or_list.gsub(".", "\.")})"
+      Regexp.new pattern
     end
 
     # Write static files, pages, and posts.
@@ -250,7 +280,7 @@ module Jekyll
       end
     end
 
-    # Constructs a Hash of Posts indexed by the specified Post attribute.
+    # Construct a Hash of Posts indexed by the specified Post attribute.
     #
     # post_attr - The String name of the Post attribute.
     #
@@ -300,15 +330,15 @@ module Jekyll
     # or are excluded in the site configuration, unless they are web server
     # files such as '.htaccess'.
     #
-    # entries - The Array of file/directory entries to filter.
+    # entries - The Array of String file/directory entries to filter.
     #
     # Returns the Array of filtered entries.
     def filter_entries(entries)
-      entries = entries.reject do |e|
-        unless ['.htaccess'].include?(e)
+      entries.reject do |e|
+        unless self.include.glob_include?(e)
           ['.', '_', '#'].include?(e[0..0]) ||
           e[-1..-1] == '~' ||
-          self.exclude.include?(e) #||
+          self.exclude.glob_include?(e) #||
           #File.symlink?(e)
         end
       end
